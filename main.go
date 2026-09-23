@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -33,7 +34,7 @@ func main() {
 			result.WriteString(fmt.Sprintf("Model: %s\n", info[0].ModelName))
 			result.WriteString(fmt.Sprintf("Cores: %d\n", info[0].Cores))
 		}
-		
+
 		percentages, err := cpu.Percent(time.Second, true)
 		if err == nil {
 			result.WriteString("CPU Usage per core:\n")
@@ -65,7 +66,7 @@ func main() {
 			gbUsed := float64(v.Used) / (1024 * 1024 * 1024)
 			result.WriteString(fmt.Sprintf("RAM Used: %.2f GB / Total: %.2f GB (%.2f%%)\n", gbUsed, gbTotal, v.UsedPercent))
 		}
-		
+
 		s, err := mem.SwapMemory()
 		if err == nil {
 			gbTotal := float64(s.Total) / (1024 * 1024 * 1024)
@@ -91,14 +92,44 @@ func main() {
 
 		result := fmt.Sprintf("OS: %v (%v %v)\nUptime: %v seconds\nHostname: %v\n", hInfo.OS, hInfo.Platform, hInfo.PlatformVersion, hInfo.Uptime, hInfo.Hostname)
 
+		result += "\nTemperatures:\n"
+
+		// Fallback to gopsutil first
 		temps, err := host.SensorsTemperatures()
 		if err == nil && len(temps) > 0 {
-			result += "\nTemperatures:\n"
 			for _, t := range temps {
 				result += fmt.Sprintf(" - %v: %.2f°C\n", t.SensorKey, t.Temperature)
 			}
+		}
+
+		// Hardcore route: execute cputemp.exe to read true thermals via LibreHardwareMonitor
+		exePath, _ := os.Executable()
+		exeDir := filepath.Dir(exePath)
+		cputempExe := filepath.Join(exeDir, "cputemp_bin", "cputemp.exe")
+
+		// if we're running main.go directly with go run, executable will be in temp folder, so check current dir as fallback
+		if _, err := os.Stat(cputempExe); os.IsNotExist(err) {
+			cwd, _ := os.Getwd()
+			cputempExe = filepath.Join(cwd, "cputemp_bin", "cputemp.exe")
+		}
+
+		cmd := exec.Command(cputempExe)
+		cmd.Dir = filepath.Dir(cputempExe)
+		out, err := cmd.Output()
+		if err == nil {
+			output := strings.TrimSpace(string(out))
+			if output != "" {
+				for _, line := range strings.Split(output, "\n") {
+					line = strings.TrimSpace(line)
+					if line != "" {
+						result += fmt.Sprintf(" - %s\n", line)
+					}
+				}
+			}
 		} else {
-			result += "\nTemperatures: Not supported natively on this OS by gopsutil without external tools."
+			if len(temps) == 0 {
+				result += " Not supported natively and failed to run cputemp.exe. Please run as Administrator or verify cputemp_bin exists.\n"
+			}
 		}
 
 		return mcp.NewToolResultText(result), nil
@@ -177,8 +208,8 @@ func main() {
 		}
 
 		type ProcInfo struct {
-			PID int32
-			Name string
+			PID        int32
+			Name       string
 			MemPercent float32
 			CPUPercent float64
 		}
@@ -191,10 +222,10 @@ func main() {
 			}
 			memP, _ := p.MemoryPercent()
 			cpuP, _ := p.CPUPercent()
-			
+
 			procList = append(procList, ProcInfo{
-				PID: p.Pid,
-				Name: name,
+				PID:        p.Pid,
+				Name:       name,
 				MemPercent: memP,
 				CPUPercent: cpuP,
 			})
